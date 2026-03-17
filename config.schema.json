@@ -1,17 +1,64 @@
 {
-  "pluginAlias": "ExampleHomebridgePlugin",
+  "pluginAlias": "NjspcPoolController",
   "pluginType": "platform",
   "singular": true,
   "strictValidation": false,
   "schema": {
     "type": "object",
-    "required": ["name"],
-    "additionalProperties": false,
+    "required": ["name", "host"],
     "properties": {
       "name": {
         "title": "Name",
         "type": "string",
-        "default": "Example Dynamic Platform"
+        "default": "Pool Controller"
+      },
+      "host": {
+        "title": "njsPC Host",
+        "type": "string",
+        "default": "http://localhost:4200",
+        "description": "Full URL of your nodejs-poolController instance (e.g. http://192.168.1.100:4200)."
+      },
+      "skipCircuitIds": {
+        "title": "Skip Circuit IDs",
+        "type": "array",
+        "items": {
+          "type": "integer"
+        },
+        "default": [],
+        "description": "List of circuit IDs to hide from HomeKit."
+      },
+      "skipFeatureIds": {
+        "title": "Skip Feature IDs",
+        "type": "array",
+        "items": {
+          "type": "integer"
+        },
+        "default": [],
+        "description": "List of feature IDs to hide from HomeKit."
+      },
+      "hideAirSensor": {
+        "title": "Hide Air Temperature Sensor",
+        "type": "boolean",
+        "default": false,
+        "description": "Hide the air temperature sensor from HomeKit."
+      },
+      "hideWaterSensors": {
+        "title": "Hide Water Temperature Sensors",
+        "type": "boolean",
+        "default": false,
+        "description": "Hide water temperature sensors from HomeKit (temperatures still visible on thermostat accessories)."
+      },
+      "hidePumps": {
+        "title": "Hide Pumps",
+        "type": "boolean",
+        "default": false,
+        "description": "Hide pump accessories from HomeKit."
+      },
+      "hideChlorinator": {
+        "title": "Hide Chlorinator",
+        "type": "boolean",
+        "default": false,
+        "description": "Hide chlorinator accessories from HomeKit."
       }
     }
   }

@@ -1,29 +1,40 @@
 import type { API, Characteristic, DynamicPlatformPlugin, Logging, PlatformAccessory, PlatformConfig, Service } from 'homebridge';
 
-import { ExamplePlatformAccessory } from './platformAccessory.js';
 import { PLATFORM_NAME, PLUGIN_NAME } from './settings.js';
+import { NjspcApi } from './njspcApi.js';
+import type { NjspcBody, NjspcChlorinator, NjspcCircuit, NjspcPump, NjspcTemps } from './njspcApi.js';
+import { CircuitAccessory } from './accessories/circuitAccessory.js';
+import { BodyAccessory } from './accessories/bodyAccessory.js';
+import { PumpAccessory } from './accessories/pumpAccessory.js';
+import { TemperatureSensorAccessory } from './accessories/temperatureSensorAccessory.js';
+import { ChlorinatorAccessory } from './accessories/chlorinatorAccessory.js';
 
-// This is only required when using Custom Services and Characteristics not support by HomeKit
-import { EveHomeKitTypes } from 'homebridge-lib/EveHomeKitTypes';
+interface PluginConfig extends PlatformConfig {
+  host?: string;
+  skipCircuitIds?: number[];
+  skipFeatureIds?: number[];
+  hideAirSensor?: boolean;
+  hideWaterSensors?: boolean;
+  hidePumps?: boolean;
+  hideChlorinator?: boolean;
+}
 
-/**
- * HomebridgePlatform
- * This class is the main constructor for your plugin, this is where you should
- * parse the user config and discover/register accessories with Homebridge.
- */
-export class ExampleHomebridgePlatform implements DynamicPlatformPlugin {
+export class PoolControllerPlatform implements DynamicPlatformPlugin {
   public readonly Service: typeof Service;
   public readonly Characteristic: typeof Characteristic;
+  public readonly njspcApi: NjspcApi;
 
-  // this is used to track restored cached accessories
-  public readonly accessories: Map<string, PlatformAccessory> = new Map();
-  public readonly discoveredCacheUUIDs: string[] = [];
+  private readonly cachedAccessories: Map<string, PlatformAccessory> = new Map();
+  private readonly discoveredUUIDs: Set<string> = new Set();
+  private readonly pluginConfig: PluginConfig;
 
-  // This is only required when using Custom Services and Characteristics not support by HomeKit
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  public readonly CustomServices: any;
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  public readonly CustomCharacteristics: any;
+  // Accessory handler maps for socket updates
+  private readonly circuitHandlers: Map<number, CircuitAccessory> = new Map();
+  private readonly bodyHandlers: Map<number, BodyAccessory> = new Map();
+  private readonly pumpHandlers: Map<number, PumpAccessory> = new Map();
+  private readonly chlorinatorHandlers: Map<number, ChlorinatorAccessory> = new Map();
+  private airSensorHandler: TemperatureSensorAccessory | null = null;
+  private readonly waterSensorHandlers: Map<string, TemperatureSensorAccessory> = new Map();
 
   constructor(
     public readonly log: Logging,
@@ -32,119 +43,276 @@ export class ExampleHomebridgePlatform implements DynamicPlatformPlugin {
   ) {
     this.Service = api.hap.Service;
     this.Characteristic = api.hap.Characteristic;
+    this.pluginConfig = config as PluginConfig;
 
-    // This is only required when using Custom Services and Characteristics not support by HomeKit
-    this.CustomServices = new EveHomeKitTypes(this.api).Services;
-    this.CustomCharacteristics = new EveHomeKitTypes(this.api).Characteristics;
+    const host = this.pluginConfig.host ?? 'http://localhost:4200';
+    this.njspcApi = new NjspcApi(log, host);
 
-    this.log.debug('Finished initializing platform:', this.config.name);
+    this.log.debug('Initialized njsPC Pool Controller plugin');
 
-    // When this event is fired it means Homebridge has restored all cached accessories from disk.
-    // Dynamic Platform plugins should only register new accessories after this event was fired,
-    // in order to ensure they weren't added to homebridge already. This event can also be used
-    // to start discovery of new accessories.
     this.api.on('didFinishLaunching', () => {
-      log.debug('Executed didFinishLaunching callback');
-      // run the method to discover / register your devices as accessories
       this.discoverDevices();
     });
   }
 
-  /**
-   * This function is invoked when homebridge restores cached accessories from disk at startup.
-   * It should be used to set up event handlers for characteristics and update respective values.
-   */
-  configureAccessory(accessory: PlatformAccessory) {
-    this.log.info('Loading accessory from cache:', accessory.displayName);
-
-    // add the restored accessory to the accessories cache, so we can track if it has already been registered
-    this.accessories.set(accessory.UUID, accessory);
+  configureAccessory(accessory: PlatformAccessory): void {
+    this.log.info('Restoring cached accessory:', accessory.displayName);
+    this.cachedAccessories.set(accessory.UUID, accessory);
   }
 
-  /**
-   * This is an example method showing how to register discovered accessories.
-   * Accessories must only be registered once, previously created accessories
-   * must not be registered again to prevent "duplicate UUID" errors.
-   */
-  discoverDevices() {
-    // EXAMPLE ONLY
-    // A real plugin you would discover accessories from the local network, cloud services
-    // or a user-defined array in the platform config.
-    const exampleDevices = [
-      {
-        exampleUniqueId: 'ABCD',
-        exampleDisplayName: 'Bedroom',
-      },
-      {
-        exampleUniqueId: 'EFGH',
-        exampleDisplayName: 'Kitchen',
-      },
-      {
-        // This is an example of a device which uses a Custom Service
-        exampleUniqueId: 'IJKL',
-        exampleDisplayName: 'Backyard',
-        CustomService: 'AirPressureSensor',
-      },
-    ];
+  private async discoverDevices(): Promise<void> {
+    try {
+      this.log.info('Fetching state from njsPC...');
+      const state = await this.njspcApi.getState();
+      this.registerDevices(state);
+      this.setupSocketListeners();
+      this.njspcApi.connect();
+    } catch (err) {
+      this.log.error('Failed to connect to njsPC:', (err as Error).message);
+      this.log.error('Will retry on socket reconnection.');
+      this.setupSocketListeners();
+      this.njspcApi.connect();
+      this.njspcApi.on('connected', async () => {
+        try {
+          const state = await this.njspcApi.getState();
+          this.registerDevices(state);
+        } catch (retryErr) {
+          this.log.error('Retry failed:', (retryErr as Error).message);
+        }
+      });
+    }
+  }
 
-    // loop over the discovered devices and register each one if it has not already been registered
-    for (const device of exampleDevices) {
-      // generate a unique id for the accessory this should be generated from
-      // something globally unique, but constant, for example, the device serial
-      // number or MAC address
-      const uuid = this.api.hap.uuid.generate(device.exampleUniqueId);
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  private registerDevices(state: any): void {
+    const skipCircuits = new Set(this.pluginConfig.skipCircuitIds ?? []);
+    const skipFeatures = new Set(this.pluginConfig.skipFeatureIds ?? []);
 
-      // see if an accessory with the same uuid has already been registered and restored from
-      // the cached devices we stored in the `configureAccessory` method above
-      const existingAccessory = this.accessories.get(uuid);
-
-      if (existingAccessory) {
-        // the accessory already exists
-        this.log.info('Restoring existing accessory from cache:', existingAccessory.displayName);
-
-        // if you need to update the accessory.context then you should run `api.updatePlatformAccessories`. e.g.:
-        // existingAccessory.context.device = device;
-        // this.api.updatePlatformAccessories([existingAccessory]);
-
-        // create the accessory handler for the restored accessory
-        // this is imported from `platformAccessory.ts`
-        new ExamplePlatformAccessory(this, existingAccessory);
-
-        // it is possible to remove platform accessories at any time using `api.unregisterPlatformAccessories`, e.g.:
-        // remove platform accessories when no longer present
-        // this.api.unregisterPlatformAccessories(PLUGIN_NAME, PLATFORM_NAME, [existingAccessory]);
-        // this.log.info('Removing existing accessory from cache:', existingAccessory.displayName);
-      } else {
-        // the accessory does not yet exist, so we need to create it
-        this.log.info('Adding new accessory:', device.exampleDisplayName);
-
-        // create a new accessory
-        const accessory = new this.api.platformAccessory(device.exampleDisplayName, uuid);
-
-        // store a copy of the device object in the `accessory.context`
-        // the `context` property can be used to store any data about the accessory you may need
-        accessory.context.device = device;
-
-        // create the accessory handler for the newly create accessory
-        // this is imported from `platformAccessory.ts`
-        new ExamplePlatformAccessory(this, accessory);
-
-        // link the accessory to your platform
-        this.api.registerPlatformAccessories(PLUGIN_NAME, PLATFORM_NAME, [accessory]);
+    // Register circuits
+    for (const circuit of (state.circuits ?? [])) {
+      if (skipCircuits.has(circuit.id)) {
+        continue;
       }
-
-      // push into discoveredCacheUUIDs
-      this.discoveredCacheUUIDs.push(uuid);
+      this.registerCircuit(circuit, 'circuit');
     }
 
-    // you can also deal with accessories from the cache which are no longer present by removing them from Homebridge
-    // for example, if your plugin logs into a cloud account to retrieve a device list, and a user has previously removed a device
-    // from this cloud account, then this device will no longer be present in the device list but will still be in the Homebridge cache
-    for (const [uuid, accessory] of this.accessories) {
-      if (!this.discoveredCacheUUIDs.includes(uuid)) {
-        this.log.info('Removing existing accessory from cache:', accessory.displayName);
+    // Register features (same as circuits but different namespace)
+    for (const feature of (state.features ?? [])) {
+      if (skipFeatures.has(feature.id)) {
+        continue;
+      }
+      this.registerCircuit(feature, 'feature');
+    }
+
+    // Register bodies (thermostats)
+    for (const body of (state.temps?.bodies ?? state.bodies ?? [])) {
+      this.registerBody(body);
+    }
+
+    // Register temperature sensors
+    if (!this.pluginConfig.hideAirSensor && state.temps?.air !== undefined) {
+      this.registerTempSensor('air', 'Air Temperature', state.temps.air);
+    }
+
+    if (!this.pluginConfig.hideWaterSensors) {
+      if (state.temps?.waterSensor1 !== undefined && state.temps.waterSensor1 > 0) {
+        this.registerTempSensor('water1', 'Water Sensor 1', state.temps.waterSensor1);
+      }
+      if (state.temps?.waterSensor2 !== undefined && state.temps.waterSensor2 > 0) {
+        this.registerTempSensor('water2', 'Water Sensor 2', state.temps.waterSensor2);
+      }
+    }
+
+    // Register pumps
+    if (!this.pluginConfig.hidePumps) {
+      for (const pump of (state.pumps ?? [])) {
+        if (pump.type?.val > 0) {
+          this.registerPump(pump);
+        }
+      }
+    }
+
+    // Register chlorinators
+    if (!this.pluginConfig.hideChlorinator) {
+      for (const chlor of (state.chlorinators ?? [])) {
+        this.registerChlorinator(chlor);
+      }
+    }
+
+    // Remove stale cached accessories
+    for (const [uuid, accessory] of this.cachedAccessories) {
+      if (!this.discoveredUUIDs.has(uuid)) {
+        this.log.info('Removing stale accessory:', accessory.displayName);
         this.api.unregisterPlatformAccessories(PLUGIN_NAME, PLATFORM_NAME, [accessory]);
       }
     }
+
+    this.log.info(`Discovered ${this.discoveredUUIDs.size} accessories`);
+  }
+
+  private registerCircuit(circuit: NjspcCircuit, prefix: string): void {
+    const uuid = this.api.hap.uuid.generate(`${prefix}-${circuit.id}`);
+    this.discoveredUUIDs.add(uuid);
+
+    const existingAccessory = this.cachedAccessories.get(uuid);
+    if (existingAccessory) {
+      this.log.info('Restoring circuit:', circuit.name);
+      existingAccessory.context.device = circuit;
+      const handler = new CircuitAccessory(this, existingAccessory);
+      this.circuitHandlers.set(circuit.id, handler);
+    } else {
+      this.log.info('Adding circuit:', circuit.name);
+      const accessory = new this.api.platformAccessory(circuit.name, uuid);
+      accessory.context.device = circuit;
+      const handler = new CircuitAccessory(this, accessory);
+      this.circuitHandlers.set(circuit.id, handler);
+      this.api.registerPlatformAccessories(PLUGIN_NAME, PLATFORM_NAME, [accessory]);
+    }
+  }
+
+  private registerBody(body: NjspcBody): void {
+    const uuid = this.api.hap.uuid.generate(`body-${body.id}`);
+    this.discoveredUUIDs.add(uuid);
+
+    const existingAccessory = this.cachedAccessories.get(uuid);
+    if (existingAccessory) {
+      this.log.info('Restoring body:', body.name);
+      existingAccessory.context.device = body;
+      const handler = new BodyAccessory(this, existingAccessory);
+      this.bodyHandlers.set(body.id, handler);
+    } else {
+      this.log.info('Adding body:', body.name);
+      const accessory = new this.api.platformAccessory(body.name, uuid);
+      accessory.context.device = body;
+      const handler = new BodyAccessory(this, accessory);
+      this.bodyHandlers.set(body.id, handler);
+      this.api.registerPlatformAccessories(PLUGIN_NAME, PLATFORM_NAME, [accessory]);
+    }
+  }
+
+  private registerTempSensor(id: string, name: string, temp: number): void {
+    const uuid = this.api.hap.uuid.generate(`temp-${id}`);
+    this.discoveredUUIDs.add(uuid);
+
+    const existingAccessory = this.cachedAccessories.get(uuid);
+    if (existingAccessory) {
+      this.log.info('Restoring sensor:', name);
+      existingAccessory.context.device = { id, name, temp };
+      const handler = new TemperatureSensorAccessory(this, existingAccessory);
+      if (id === 'air') {
+        this.airSensorHandler = handler;
+      } else {
+        this.waterSensorHandlers.set(id, handler);
+      }
+    } else {
+      this.log.info('Adding sensor:', name);
+      const accessory = new this.api.platformAccessory(name, uuid);
+      accessory.context.device = { id, name, temp };
+      const handler = new TemperatureSensorAccessory(this, accessory);
+      if (id === 'air') {
+        this.airSensorHandler = handler;
+      } else {
+        this.waterSensorHandlers.set(id, handler);
+      }
+      this.api.registerPlatformAccessories(PLUGIN_NAME, PLATFORM_NAME, [accessory]);
+    }
+  }
+
+  private registerPump(pump: NjspcPump): void {
+    const uuid = this.api.hap.uuid.generate(`pump-${pump.id}`);
+    this.discoveredUUIDs.add(uuid);
+
+    const existingAccessory = this.cachedAccessories.get(uuid);
+    if (existingAccessory) {
+      this.log.info('Restoring pump:', pump.name);
+      existingAccessory.context.device = pump;
+      const handler = new PumpAccessory(this, existingAccessory);
+      this.pumpHandlers.set(pump.id, handler);
+    } else {
+      this.log.info('Adding pump:', pump.name);
+      const accessory = new this.api.platformAccessory(pump.name, uuid);
+      accessory.context.device = pump;
+      const handler = new PumpAccessory(this, accessory);
+      this.pumpHandlers.set(pump.id, handler);
+      this.api.registerPlatformAccessories(PLUGIN_NAME, PLATFORM_NAME, [accessory]);
+    }
+  }
+
+  private registerChlorinator(chlor: NjspcChlorinator): void {
+    const uuid = this.api.hap.uuid.generate(`chlorinator-${chlor.id}`);
+    this.discoveredUUIDs.add(uuid);
+
+    const existingAccessory = this.cachedAccessories.get(uuid);
+    if (existingAccessory) {
+      this.log.info('Restoring chlorinator:', chlor.name);
+      existingAccessory.context.device = chlor;
+      const handler = new ChlorinatorAccessory(this, existingAccessory);
+      this.chlorinatorHandlers.set(chlor.id, handler);
+    } else {
+      this.log.info('Adding chlorinator:', chlor.name);
+      const accessory = new this.api.platformAccessory(chlor.name, uuid);
+      accessory.context.device = chlor;
+      const handler = new ChlorinatorAccessory(this, accessory);
+      this.chlorinatorHandlers.set(chlor.id, handler);
+      this.api.registerPlatformAccessories(PLUGIN_NAME, PLATFORM_NAME, [accessory]);
+    }
+  }
+
+  private setupSocketListeners(): void {
+    this.njspcApi.on('circuit', (data: NjspcCircuit) => {
+      const handler = this.circuitHandlers.get(data.id);
+      if (handler) {
+        handler.updateState(data);
+      }
+    });
+
+    this.njspcApi.on('feature', (data: NjspcCircuit) => {
+      const handler = this.circuitHandlers.get(data.id);
+      if (handler) {
+        handler.updateState(data);
+      }
+    });
+
+    this.njspcApi.on('body', (data: NjspcBody) => {
+      const handler = this.bodyHandlers.get(data.id);
+      if (handler) {
+        handler.updateState(data);
+      }
+    });
+
+    this.njspcApi.on('temps', (data: NjspcTemps) => {
+      if (this.airSensorHandler && data.air !== undefined) {
+        this.airSensorHandler.updateTemp(data.air);
+      }
+      if (data.waterSensor1 !== undefined) {
+        this.waterSensorHandlers.get('water1')?.updateTemp(data.waterSensor1);
+      }
+      if (data.waterSensor2 !== undefined) {
+        this.waterSensorHandlers.get('water2')?.updateTemp(data.waterSensor2);
+      }
+      // Update body temperatures from temps event
+      if (data.bodies) {
+        for (const body of data.bodies) {
+          const handler = this.bodyHandlers.get(body.id);
+          if (handler) {
+            handler.updateState(body);
+          }
+        }
+      }
+    });
+
+    this.njspcApi.on('pump', (data: NjspcPump) => {
+      const handler = this.pumpHandlers.get(data.id);
+      if (handler) {
+        handler.updateState(data);
+      }
+    });
+
+    this.njspcApi.on('chlorinator', (data: NjspcChlorinator) => {
+      const handler = this.chlorinatorHandlers.get(data.id);
+      if (handler) {
+        handler.updateState(data);
+      }
+    });
   }
 }

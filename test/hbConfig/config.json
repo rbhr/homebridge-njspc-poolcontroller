@@ -1,13 +1,13 @@
 {
   "bridge": {
-    "name": "PluginTemplate",
+    "name": "NjspcPoolController",
     "username": "AA:BB:CC:DD:EE:FF",
     "port": 51826,
     "pin": "031-45-154"
   },
-  "description": "HomeBridge HTTP Status Control",
+  "description": "Homebridge njsPC Pool Controller",
   "plugins": [
-    "homebridge-plugin-name",
+    "homebridge-njspc-poolcontroller",
     "homebridge-config-ui-x"
   ],
   "platforms": [
@@ -23,8 +23,9 @@
       "debug": false
     },
     {
-      "name": "homebridge-plugin-name",
-      "platform": "ExampleHomebridgePlugin"
+      "name": "Pool Controller",
+      "platform": "NjspcPoolController",
+      "host": "http://localhost:4200"
     }
   ],
   "accessories": []

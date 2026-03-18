@@ -6,10 +6,14 @@ import type { NjspcBody } from '../njspcApi.js';
 const HEAT_MODE_OFF = 0;
 const HEAT_MODE_HEATER = 1;
 
+// HomeKit thermostat target temperature bounds (°C)
+const TARGET_TEMP_MIN = 4.4;
+const TARGET_TEMP_MAX = 40;
+
 export class BodyAccessory {
   private readonly service: Service;
   private currentTemp = 0;
-  private targetTemp = 0;
+  private targetTemp = TARGET_TEMP_MIN;
   private heatModeVal = HEAT_MODE_OFF;
   private heatStatusVal = 0;
 
@@ -19,7 +23,7 @@ export class BodyAccessory {
   ) {
     const body: NjspcBody = accessory.context.device;
     this.currentTemp = this.toC(body.temp);
-    this.targetTemp = this.toC(body.setPoint);
+    this.targetTemp = this.clampTarget(this.toC(body.setPoint));
     this.heatModeVal = body.heatMode?.val ?? HEAT_MODE_OFF;
     this.heatStatusVal = body.heatStatus?.val ?? 0;
 
@@ -39,7 +43,7 @@ export class BodyAccessory {
 
     // Set valid temperature range (4.4°C to 40°C / 40°F to 104°F)
     this.service.getCharacteristic(this.platform.Characteristic.TargetTemperature)
-      .setProps({ minValue: 4.4, maxValue: 40, minStep: 0.5 });
+      .setProps({ minValue: TARGET_TEMP_MIN, maxValue: TARGET_TEMP_MAX, minStep: 0.5 });
 
     this.service.getCharacteristic(this.platform.Characteristic.TargetHeatingCoolingState)
       .setProps({
@@ -64,7 +68,7 @@ export class BodyAccessory {
 
   updateState(data: NjspcBody): void {
     this.currentTemp = this.toC(data.temp);
-    this.targetTemp = this.toC(data.setPoint);
+    this.targetTemp = this.clampTarget(this.toC(data.setPoint));
     this.heatModeVal = data.heatMode?.val ?? HEAT_MODE_OFF;
     this.heatStatusVal = data.heatStatus?.val ?? 0;
 
@@ -86,6 +90,10 @@ export class BodyAccessory {
   updateTemp(temp: number): void {
     this.currentTemp = this.toC(temp);
     this.service.updateCharacteristic(this.platform.Characteristic.CurrentTemperature, this.currentTemp);
+  }
+
+  private clampTarget(c: number): number {
+    return Math.min(TARGET_TEMP_MAX, Math.max(TARGET_TEMP_MIN, c));
   }
 
   // Convert Fahrenheit to Celsius

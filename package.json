@@ -2,7 +2,7 @@
   "name": "homebridge-njspc-poolcontroller",
   "displayName": "njsPC Pool Controller",
   "type": "module",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "private": false,
   "description": "Homebridge plugin for nodejs-poolController (njsPC) - control your pool equipment via HomeKit.",
   "author": "rbhr",

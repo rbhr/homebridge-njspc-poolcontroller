@@ -13,7 +13,7 @@ export class PumpAccessory {
     private readonly accessory: PlatformAccessory,
   ) {
     const pump: NjspcPump = accessory.context.device;
-    this.isOn = pump.isOn;
+    this.isOn = pump.isOn ?? false;
     this.rpm = pump.rpm ?? 0;
     this.watts = pump.watts ?? 0;
 
@@ -37,7 +37,7 @@ export class PumpAccessory {
   }
 
   updateState(data: NjspcPump): void {
-    this.isOn = data.isOn;
+    this.isOn = data.isOn ?? this.isOn;
     this.rpm = data.rpm ?? 0;
     this.watts = data.watts ?? 0;
 

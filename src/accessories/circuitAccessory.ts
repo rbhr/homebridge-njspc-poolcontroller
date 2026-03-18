@@ -18,7 +18,7 @@ export class CircuitAccessory {
     private readonly accessory: PlatformAccessory,
   ) {
     const circuit: NjspcCircuit = accessory.context.device;
-    this.isOn = circuit.isOn;
+    this.isOn = circuit.isOn ?? false;
 
     this.accessory.getService(this.platform.Service.AccessoryInformation)!
       .setCharacteristic(this.platform.Characteristic.Manufacturer, 'njsPC')
@@ -40,7 +40,7 @@ export class CircuitAccessory {
   }
 
   updateState(data: NjspcCircuit): void {
-    this.isOn = data.isOn;
+    this.isOn = data.isOn ?? this.isOn;
     this.service.updateCharacteristic(this.platform.Characteristic.On, this.isOn);
     this.accessory.context.device = data;
   }
